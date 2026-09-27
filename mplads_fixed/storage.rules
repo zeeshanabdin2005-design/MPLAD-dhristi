@@ -1,0 +1,9 @@
+rules_version = '2';
+service firebase.storage {
+  match /b/{bucket}/o {
+    // Firebase Storage is no longer used by MPLADS-DRISHTI.
+    match /{allPaths=**} {
+      allow read, write: if false;
+    }
+  }
+}

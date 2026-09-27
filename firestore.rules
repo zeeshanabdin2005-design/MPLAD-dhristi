@@ -1,0 +1,126 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    function isSignedIn() { return request.auth != null; }
+    function callerProfile() { return get(/databases/$(database)/documents/users/$(request.auth.uid)); }
+    function isOfficer() {
+      return isSignedIn() && (
+        callerProfile().data.role == 'OFFICER' ||
+        !('role' in callerProfile().data)
+      );
+    }
+    function isContractor() { return isSignedIn() && callerProfile().data.role == 'CONTRACTOR'; }
+    function isOwner() { return isSignedIn() && resource.data.uploadedByUid == request.auth.uid; }
+    function keepsOwner() { return request.resource.data.uploadedByUid == resource.data.uploadedByUid; }
+
+    match /users/{userId} {
+      allow read: if isSignedIn() && (request.auth.uid == userId || isOfficer());
+      allow create: if isSignedIn() && request.auth.uid == userId
+        && request.resource.data.role in ['OFFICER', 'CONTRACTOR'];
+      allow update: if isSignedIn() && request.auth.uid == userId
+        && request.resource.data.role == resource.data.role;
+    }
+
+    match /projects/{projectId} {
+      allow read: if isSignedIn();
+      allow write: if isOfficer();
+    }
+
+    match /documents/{documentId} {
+      allow read: if isSignedIn();
+      allow create: if isSignedIn()
+        && request.resource.data.processingStatus == 'PENDING'
+        && request.resource.data.uploadedByUid == request.auth.uid;
+      allow update: if (
+        isOwner() && keepsOwner()
+        && resource.data.processingStatus == 'PENDING'
+        && request.resource.data.processingStatus == 'PROCESSING'
+        && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['processingStatus'])
+      ) || (
+        isOwner() && keepsOwner()
+        && resource.data.processingStatus == 'PROCESSING'
+        && request.resource.data.processingStatus in ['COMPLETED', 'FAILED']
+        && request.resource.data.diff(resource.data).affectedKeys().hasOnly([
+          'processingStatus', 'ocrStatus', 'aiStatus', 'model', 'processedAt',
+          'extractedFields', 'observations', 'evidenceSignals', 'processingError'
+        ])
+      );
+      allow delete: if isOwner();
+    }
+
+    match /images/{imageId} {
+      allow read: if isSignedIn();
+      allow create: if isSignedIn()
+        && request.resource.data.processingStatus == 'PENDING'
+        && request.resource.data.uploadedByUid == request.auth.uid;
+      allow update: if (
+        isOwner() && keepsOwner()
+        && resource.data.processingStatus == 'PENDING'
+        && request.resource.data.processingStatus == 'PROCESSING'
+        && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['processingStatus'])
+      ) || (
+        isOwner() && keepsOwner()
+        && resource.data.processingStatus == 'PROCESSING'
+        && request.resource.data.processingStatus in ['COMPLETED', 'FAILED']
+        && request.resource.data.diff(resource.data).affectedKeys().hasOnly([
+          'processingStatus', 'aiStatus', 'model', 'processedAt', 'observations',
+          'sceneDescription', 'visibleWorkStage', 'visibleText', 'confidence',
+          'evidenceSignals', 'processingError'
+        ])
+      );
+      allow delete: if isOwner();
+    }
+
+    match /contractorAssignments/{assignmentId} {
+      allow read: if isOfficer() || (isContractor() && resource.data.contractorUid == request.auth.uid);
+      allow create: if isOfficer() || (
+        isContractor()
+        && request.resource.data.contractorUid == request.auth.uid
+        && request.resource.data.status == 'REQUESTED'
+      );
+      allow update: if isOfficer() || (
+        isContractor()
+        && resource.data.contractorUid == request.auth.uid
+        && request.resource.data.contractorUid == resource.data.contractorUid
+        && request.resource.data.projectId == resource.data.projectId
+        && !('approvedBy' in request.resource.data)
+        && !('approvedAt' in request.resource.data)
+        && (
+          (resource.data.status == 'REQUESTED' && request.resource.data.status == 'REQUESTED') ||
+          (resource.data.status == 'REVOKED' && request.resource.data.status == 'REQUESTED')
+        )
+      );
+    }
+
+    match /contractorUpdates/{updateId} {
+      allow read: if isOfficer() || (isContractor() && resource.data.contractorUid == request.auth.uid);
+      allow create: if isContractor()
+        && request.resource.data.contractorUid == request.auth.uid
+        && request.resource.data.status == 'SUBMITTED'
+        && request.resource.data.projectId is string
+        && exists(/databases/$(database)/documents/contractorAssignments/$(request.resource.data.projectId + '_' + request.auth.uid))
+        && get(/databases/$(database)/documents/contractorAssignments/$(request.resource.data.projectId + '_' + request.auth.uid)).data.status == 'ACTIVE';
+      allow update, delete: if false;
+    }
+
+    match /verificationCases/{caseId} {
+      allow read: if isOfficer();
+      allow write: if isOfficer();
+    }
+
+    match /auditLogs/{logId} {
+      allow read: if isOfficer();
+      allow create: if isSignedIn();
+      allow update, delete: if false;
+    }
+
+    match /riskAssessments/{projectId} {
+      allow read: if isOfficer();
+      allow write: if isOfficer();
+    }
+  }
+}
